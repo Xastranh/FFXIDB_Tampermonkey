@@ -1,0 +1,353 @@
+// ==UserScript==
+// @name         FFXIDB Leaflet Replacement (DEBUG HEAVY, PAGE-CONTEXT, PATCHED)
+// @namespace    http://tampermonkey.net/
+// @version      4.1
+// @description  Debug-heavy Leaflet replacement for FFXIDB Google Maps (page-context, one-time init safe)
+// @match        https://www.ffxidb.com/*
+// @run-at       document-start
+// @grant        GM_addElement
+// ==/UserScript==
+
+(function() {
+    "use strict";
+
+    console.log("[FFXIDB-DEBUG] Userscript loaded at document-start (sandbox)");
+
+    // ------------------------------------------------------------
+    // BLOCK ONLY GOOGLE MAPS (DO NOT BLOCK /public/js/maps.js)
+    // ------------------------------------------------------------
+
+    const blockList = [
+        "maps.googleapis.com"
+    ];
+
+    function shouldBlock(src) {
+        const match = blockList.some(b => src.includes(b));
+        if (match) console.warn("[FFXIDB-DEBUG] BLOCKING script:", src);
+        return match;
+    }
+
+    // Remove already-present scripts (after DOM exists)
+    function purgeExistingScripts() {
+        console.log("[FFXIDB-DEBUG] Purging existing scripts (sandbox)...");
+        document.querySelectorAll("script[src]").forEach(s => {
+            const src = s.src || "";
+            if (shouldBlock(src)) {
+                console.warn("[FFXIDB-DEBUG] Removing existing blocked script:", src);
+                s.remove();
+            }
+        });
+    }
+
+    // MutationObserver that catches dynamically inserted scripts
+    const observer = new MutationObserver(mutations => {
+        for (const m of mutations) {
+            for (const node of m.addedNodes) {
+                if (node.tagName === "SCRIPT") {
+                    const src = node.src || "";
+                    console.log("[FFXIDB-DEBUG] Script added (sandbox):", src);
+                    if (shouldBlock(src)) {
+                        console.warn("[FFXIDB-DEBUG] Removing dynamic blocked script:", src);
+                        node.remove();
+                    }
+                }
+            }
+        }
+    });
+
+    observer.observe(document, {
+        childList: true,
+        subtree: true
+    });
+
+    document.addEventListener("DOMContentLoaded", () => {
+        console.log("[FFXIDB-DEBUG] DOMContentLoaded fired (sandbox)");
+        purgeExistingScripts();
+    });
+
+    // ------------------------------------------------------------
+    // LOAD LEAFLET (page-global) VIA GM_addElement
+    // ------------------------------------------------------------
+
+    console.log("[FFXIDB-DEBUG] Injecting Leaflet CSS/JS (sandbox)");
+
+    GM_addElement(document.head, "link", {
+        rel: "stylesheet",
+        href: "https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+    });
+
+    GM_addElement(document.head, "script", {
+        src: "https://unpkg.com/leaflet@1.9.4/dist/leaflet.js",
+        onload: () => console.log("[FFXIDB-DEBUG] Leaflet JS loaded (page)")
+    });
+
+    // ------------------------------------------------------------
+    // PAGE-CONTEXT MAIN (can see window.maps, window.positions)
+    // ------------------------------------------------------------
+
+    function pageMain() {
+        "use strict";
+
+        console.log("[FFXIDB-DEBUG] pageMain injected in PAGE context");
+
+        // Prevent double initialization
+        window.__ffxidb_leaflet_initialized = false;
+
+        // ---------------- PROJECTION ----------------
+
+        function gameCoordToLeaflet(point, mapdata) {
+            const px = point.x * mapdata.mult + mapdata.xoff;
+            const py = mapdata.yoff - point.y * mapdata.mult;
+            const result = [-py, px];
+            console.log("[FFXIDB-DEBUG] Converted game coord", point, "→", result);
+            return result;
+        }
+
+        // ---------------- ADAPTER ----------------
+
+        function buildSpawndataFromMapsAndPositions() {
+            console.log("[FFXIDB-DEBUG] Building spawndata… (page)");
+
+            if (!window.maps) {
+                console.warn("[FFXIDB-DEBUG] window.maps missing (page)");
+                return null;
+            }
+            if (!window.positions) {
+                console.warn("[FFXIDB-DEBUG] window.positions missing (page)");
+                return null;
+            }
+
+            console.log("[FFXIDB-DEBUG] maps (page):", window.maps);
+            console.log("[FFXIDB-DEBUG] positions length (page):", window.positions.length);
+
+            const posObjects = window.positions.map(p => ({
+                x: p[0],
+                y: p[1],
+                z: p[2]
+            }));
+
+            const spawndata = {};
+
+            for (const m of window.maps) {
+                console.log("[FFXIDB-DEBUG] Processing map (page):", m.id);
+
+                const mapid = m.id;
+                let mapPositions = [];
+
+                if (Array.isArray(m.boxes) && m.boxes.length > 0) {
+                    console.log("[FFXIDB-DEBUG] Map has boxes:", m.boxes.length);
+                    for (const p of posObjects) {
+                        for (const b of m.boxes) {
+                            if (p.x >= b.x1 && p.x <= b.x2 &&
+                                p.y >= b.y1 && p.y <= b.y2) {
+                                mapPositions.push(p);
+                                break;
+                            }
+                        }
+                    }
+                } else {
+                    console.log("[FFXIDB-DEBUG] Map has NO boxes, copying all positions");
+                    mapPositions = posObjects.slice();
+                }
+
+                console.log(`[FFXIDB-DEBUG] Map ${mapid} has ${mapPositions.length} positions`);
+
+                spawndata[mapid] = {
+                    mult: m.mult,
+                    xoff: m.xoff,
+                    yoff: m.yoff,
+                    positions: mapPositions
+                };
+            }
+
+            console.log("[FFXIDB-DEBUG] Final spawndata (page):", spawndata);
+            return spawndata;
+        }
+
+        // ---------------- TIMING CHECKS ----------------
+
+        function mapsAreReady() {
+            const ready =
+                window.maps &&
+                Array.isArray(window.maps) &&
+                window.maps.length > 0 &&
+                window.maps.every(m => m && typeof m.id === "number");
+
+            console.log("[FFXIDB-DEBUG] mapsAreReady (page):", ready, window.maps);
+            return ready;
+        }
+
+        function positionsAreReady() {
+            const ready =
+                window.positions &&
+                Array.isArray(window.positions) &&
+                window.positions.length > 0;
+
+            console.log("[FFXIDB-DEBUG] positionsAreReady (page):", ready, window.positions);
+            return ready;
+        }
+
+        function leafletReady() {
+            const ready = typeof window.L !== "undefined" && typeof window.L.map === "function";
+            console.log("[FFXIDB-DEBUG] leafletReady (page):", ready);
+            return ready;
+        }
+
+        // ---------------- LEAFLET RENDERER ----------------
+
+        function initLeafletMaps() {
+            console.log("[FFXIDB-DEBUG] initLeafletMaps ENTERED (page)");
+
+            if (window.__ffxidb_leaflet_initialized) {
+                console.warn("[FFXIDB-DEBUG] Already initialized — skipping");
+                return;
+            }
+
+            const spawnArray = document.getElementById("spawnarray");
+            console.log("[FFXIDB-DEBUG] spawnarray (page):", spawnArray);
+
+            if (!spawnArray) {
+                console.warn("[FFXIDB-DEBUG] spawnarray missing (page)");
+                return;
+            }
+
+            let data = window.spawndata;
+
+            if (!data && window.maps && window.positions) {
+                console.log("[FFXIDB-DEBUG] spawndata missing, building… (page)");
+                data = buildSpawndataFromMapsAndPositions();
+                window.spawndata = data;
+            }
+
+            if (!data) {
+                console.warn("[FFXIDB-DEBUG] spawndata STILL missing (page)");
+                return;
+            }
+
+            // Style for debug visibility
+            const style = document.createElement("style");
+            style.textContent = `
+                .map.leaflet-container {
+                    width: 512px !important;
+                    height: 512px !important;
+                    position: relative;
+                    border: 2px solid red;
+                }
+            `;
+            document.head.appendChild(style);
+
+            for (const mapid in data) {
+                console.log("[FFXIDB-DEBUG] Rendering map (page):", mapid);
+
+                const mapdata = data[mapid];
+
+                const mapDiv = document.createElement("div");
+                mapDiv.id = "map_" + mapid;
+                mapDiv.className = "map leaflet-container";
+                spawnArray.appendChild(mapDiv);
+
+                console.log("[FFXIDB-DEBUG] Created map div (page):", mapDiv);
+
+                const imgUrl =
+                    "/public/img/maps/map_" +
+                    ("00" + window.zone).slice(-3) + "_" +
+                    ("0" + mapid).slice(-2) + ".png";
+
+                console.log("[FFXIDB-DEBUG] Map image URL (page):", imgUrl);
+
+                const imageBounds = [[-512, 0], [0, 512]];
+
+                const map = window.L.map(mapDiv.id, {
+                    crs: window.L.CRS.Simple,
+                    minZoom: -2,
+                    maxZoom: 4,
+                    zoomControl: true,
+                    attributionControl: false
+                });
+
+                console.log("[FFXIDB-DEBUG] Leaflet map created (page):", map);
+
+                window.L.imageOverlay(imgUrl, imageBounds).addTo(map);
+                console.log("[FFXIDB-DEBUG] Image overlay added (page)");
+
+                map.fitBounds(imageBounds);
+                console.log("[FFXIDB-DEBUG] fitBounds applied (page)");
+
+                for (const p of mapdata.positions) {
+                    const latLng = gameCoordToLeaflet(p, mapdata);
+                    console.log("[FFXIDB-DEBUG] Adding marker at (page):", latLng);
+
+                    window.L.circleMarker(latLng, {
+                        radius: 5,
+                        color: "#cc0000",
+                        weight: 2,
+                        fillColor: "#ff4444",
+                        fillOpacity: 0.85
+                    }).addTo(map);
+                }
+            }
+
+            // Mark initialization complete
+            window.__ffxidb_leaflet_initialized = true;
+            console.log("[FFXIDB-DEBUG] Leaflet initialization COMPLETE");
+        }
+
+        // ---------------- WAIT LOOP (page-context) ----------------
+
+        function wait() {
+            console.log("[FFXIDB-DEBUG] wait() tick (page)");
+
+            if (window.__ffxidb_leaflet_initialized) {
+                console.log("[FFXIDB-DEBUG] Already initialized — stopping wait loop");
+                return;
+            }
+
+            const spawnArray = document.getElementById("spawnarray");
+            console.log("[FFXIDB-DEBUG] spawnarray exists (page):", !!spawnArray);
+
+            console.log("[FFXIDB-DEBUG] typeof window.maps (page):", typeof window.maps);
+            console.log("[FFXIDB-DEBUG] typeof window.positions (page):", typeof window.positions);
+
+            const ready =
+                leafletReady() &&
+                spawnArray &&
+                mapsAreReady() &&
+                positionsAreReady();
+
+            console.log("[FFXIDB-DEBUG] ready (page) =", ready);
+
+            if (ready) {
+                console.log("[FFXIDB-DEBUG] CONDITIONS MET → initLeafletMaps() (page)");
+                try {
+                    initLeafletMaps();
+                } catch (e) {
+                    console.error("[FFXIDB-DEBUG] initLeafletMaps ERROR (page):", e);
+                }
+            } else {
+                window.requestAnimationFrame(wait);
+            }
+        }
+
+        wait();
+
+        document.addEventListener("DOMContentLoaded", () => {
+            console.log("[FFXIDB-DEBUG] DOMContentLoaded → wait() (page)");
+            wait();
+        });
+
+        document.addEventListener("readystatechange", () => {
+            console.log("[FFXIDB-DEBUG] readystatechange → wait() (page)");
+            wait();
+        });
+    }
+
+    // ------------------------------------------------------------
+    // INJECT pageMain INTO PAGE CONTEXT
+    // ------------------------------------------------------------
+
+    const script = document.createElement("script");
+    script.textContent = "(" + pageMain.toString() + ")();";
+    (document.documentElement || document.head || document.body).appendChild(script);
+    script.remove();
+
+})();
