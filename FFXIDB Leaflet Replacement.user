@@ -2,6 +2,7 @@
 // @name         FFXIDB Leaflet Replacement (DEBUG HEAVY, PAGE-CONTEXT, TRANSPARENT BLUE MARKERS)
 // @namespace    https://github.com/Xastranh/FFXIDB_Tampermonkey
 // @version      1.0
+// @author       Xastranh
 // @description  Leaflet replacement with transparent blue scatter-plot style markers (cosmetic only)
 // @match        https://www.ffxidb.com/*
 // @run-at       document-start
