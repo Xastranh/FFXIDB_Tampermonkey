@@ -1,0 +1,236 @@
+// ==UserScript==
+// @name         FFXIDB Leaflet Replacement (DEBUG HEAVY, PAGE-CONTEXT, TRANSPARENT BLUE MARKERS)
+// @namespace    http://tampermonkey.net/
+// @version      4.3
+// @description  Leaflet replacement with transparent blue scatter-plot style markers (cosmetic only)
+// @match        https://www.ffxidb.com/*
+// @run-at       document-start
+// @grant        GM_addElement
+// ==/UserScript==
+
+(function() {
+    "use strict";
+
+    console.log("[FFXIDB-DEBUG] Userscript loaded at document-start (sandbox)");
+
+    const blockList = ["maps.googleapis.com"];
+
+    function shouldBlock(src) {
+        const match = blockList.some(b => src.includes(b));
+        if (match) console.warn("[FFXIDB-DEBUG] BLOCKING script:", src);
+        return match;
+    }
+
+    function purgeExistingScripts() {
+        document.querySelectorAll("script[src]").forEach(s => {
+            const src = s.src || "";
+            if (shouldBlock(src)) s.remove();
+        });
+    }
+
+    const observer = new MutationObserver(mutations => {
+        for (const m of mutations) {
+            for (const node of m.addedNodes) {
+                if (node.tagName === "SCRIPT") {
+                    const src = node.src || "";
+                    if (shouldBlock(src)) node.remove();
+                }
+            }
+        }
+    });
+
+    observer.observe(document, { childList: true, subtree: true });
+
+    document.addEventListener("DOMContentLoaded", purgeExistingScripts);
+
+    GM_addElement(document.head, "link", {
+        rel: "stylesheet",
+        href: "https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+    });
+
+    GM_addElement(document.head, "script", {
+        src: "https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+    });
+
+    function pageMain() {
+        "use strict";
+
+        window.__ffxidb_leaflet_initialized = false;
+
+        function gameCoordToLeaflet(point, mapdata) {
+            const px = point.x * mapdata.mult + mapdata.xoff;
+            const py = mapdata.yoff - point.y * mapdata.mult;
+            return [-py, px];
+        }
+
+        function buildSpawndataFromMapsAndPositions() {
+            if (!window.maps || !window.positions) return null;
+
+            const posObjects = window.positions.map(p => ({
+                x: p[0], y: p[1], z: p[2]
+            }));
+
+            const spawndata = {};
+
+            for (const m of window.maps) {
+                let mapPositions = [];
+
+                if (Array.isArray(m.boxes) && m.boxes.length > 0) {
+                    for (const p of posObjects) {
+                        for (const b of m.boxes) {
+                            if (p.x >= b.x1 && p.x <= b.x2 &&
+                                p.y >= b.y1 && p.y <= b.y2) {
+                                mapPositions.push(p);
+                                break;
+                            }
+                        }
+                    }
+                } else {
+                    mapPositions = posObjects.slice();
+                }
+
+                spawndata[m.id] = {
+                    mult: m.mult,
+                    xoff: m.xoff,
+                    yoff: m.yoff,
+                    positions: mapPositions
+                };
+            }
+
+            return spawndata;
+        }
+
+        function mapsAreReady() {
+            return window.maps &&
+                Array.isArray(window.maps) &&
+                window.maps.length > 0 &&
+                window.maps.every(m => m && typeof m.id === "number");
+        }
+
+        function positionsAreReady() {
+            return window.positions &&
+                Array.isArray(window.positions) &&
+                window.positions.length > 0;
+        }
+
+        function leafletReady() {
+            return typeof window.L !== "undefined" &&
+                typeof window.L.map === "function";
+        }
+
+        function initLeafletMaps() {
+            if (window.__ffxidb_leaflet_initialized) return;
+
+            const spawnArray = document.getElementById("spawnarray");
+            if (!spawnArray) return;
+
+            let data = window.spawndata;
+            if (!data && window.maps && window.positions) {
+                data = buildSpawndataFromMapsAndPositions();
+                window.spawndata = data;
+            }
+            if (!data) return;
+
+            // ------------------------------------------------------------
+            // COSMETIC PATCH: TRANSPARENT BLUE SCATTER-PLOT STYLE MARKERS
+            // ------------------------------------------------------------
+            const style = document.createElement("style");
+            style.textContent = `
+                .map.leaflet-container {
+                    width: 512px !important;
+                    height: 512px !important;
+                    position: relative;
+                    border: 1px solid #1e293b;
+                    border-radius: 6px;
+                    background: #0f172a;
+                    box-shadow: 0 0 10px rgba(0,0,0,0.35);
+                }
+
+                /* Soft transparent gradient markers */
+                .spawn-marker {
+                   background: radial-gradient(
+                   circle,
+                   rgba(37, 99, 235, 0.40) 0%,   /* deeper center */
+                   rgba(37, 99, 235, 0.22) 35%,  /* mid fade */
+                   rgba(37, 99, 235, 0.12) 60%,  /* outer fade */
+                   rgba(37, 99, 235, 0.00) 100%  /* transparent edge */
+                   );
+                   border-radius: 50%;
+               }
+
+            `;
+            document.head.appendChild(style);
+            // ------------------------------------------------------------
+
+            for (const mapid in data) {
+                const mapdata = data[mapid];
+
+                const mapDiv = document.createElement("div");
+                mapDiv.id = "map_" + mapid;
+                mapDiv.className = "map leaflet-container";
+                spawnArray.appendChild(mapDiv);
+
+                const imgUrl =
+                      "/public/img/maps/map_" +
+                      ("00" + window.zone).slice(-3) + "_" +
+                      ("0" + mapid).slice(-2) + ".png";
+
+                const imageBounds = [[-512, 0], [0, 512]];
+
+                const map = window.L.map(mapDiv.id, {
+                    crs: window.L.CRS.Simple,
+                    minZoom: -2,
+                    maxZoom: 4,
+                    zoomControl: true,
+                    attributionControl: false
+                });
+
+                window.L.imageOverlay(imgUrl, imageBounds).addTo(map);
+                map.fitBounds(imageBounds);
+
+                // Transparent scatter-plot style markers
+                for (const p of mapdata.positions) {
+                    const latLng = gameCoordToLeaflet(p, mapdata);
+
+                    window.L.circleMarker(latLng, {
+                        radius: 7,
+                        stroke: false,
+                        fillColor: "rgba(37, 99, 235)",
+                        fillOpacity: 0.65,
+                        className: "spawn-marker"
+                    }).addTo(map);
+                }
+            }
+
+            window.__ffxidb_leaflet_initialized = true;
+        }
+
+        function wait() {
+            if (window.__ffxidb_leaflet_initialized) return;
+
+            const spawnArray = document.getElementById("spawnarray");
+
+            const ready =
+                  leafletReady() &&
+                  spawnArray &&
+                  mapsAreReady() &&
+                  positionsAreReady();
+
+            if (ready) {
+                initLeafletMaps();
+            } else {
+                window.requestAnimationFrame(wait);
+            }
+        }
+
+        wait();
+        document.addEventListener("DOMContentLoaded", wait);
+        document.addEventListener("readystatechange", wait);
+    }
+
+    const script = document.createElement("script");
+    script.textContent = "(" + pageMain.toString() + ")();";
+    (document.documentElement || document.head || document.body).appendChild(script);
+    script.remove();
+
+})();
