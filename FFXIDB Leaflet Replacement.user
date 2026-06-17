@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         FFXIDB Leaflet Replacement (DEBUG HEAVY, PAGE-CONTEXT, TRANSPARENT BLUE MARKERS)
-// @namespace    http://tampermonkey.net/
+// @namespace    https://github.com/Xastranh/FFXIDB_Tampermonkey
 // @version      1.0
 // @description  Leaflet replacement with transparent blue scatter-plot style markers (cosmetic only)
 // @match        https://www.ffxidb.com/*
